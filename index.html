@@ -1,110 +1,249 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OpenCV.js 手のひら切り出しサンプル</title>
-  <style>
-    body { font-family: sans-serif; text-align: center; background: #f0f0f0; margin: 0; padding: 1rem;}
-    video, canvas { max-width: 100%; border-radius: 10px; margin: 0.5rem 0;}
-    button { font-size: 1rem; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; }
-    button:disabled { background: #ccc; cursor: not-allowed; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>手相ミライ診断 - 全部入りテンプレ</title>
+<style>
+  body {
+    font-family: "Yu Gothic", sans-serif;
+    background: #fff0f6;
+    color: #5a3e36;
+    text-align: center;
+    margin: 0;
+    padding: 1rem;
+  }
+  #video, #outputCanvas, #edgeCanvas {
+    width: 320px;
+    height: 240px;
+    border-radius: 12px;
+    background: #eee;
+    margin: 0.5rem auto;
+    display: block;
+  }
+  #diagnosisResult {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: #ffe6f0;
+    border-radius: 1rem;
+    max-width: 320px;
+    margin-left: auto;
+    margin-right: auto;
+    text-align: left;
+    white-space: pre-wrap;
+  }
+  button {
+    padding: 0.6rem 1rem;
+    font-size: 1rem;
+    border-radius: 0.5rem;
+    border: none;
+    background: #f48abf;
+    color: #fff;
+    cursor: pointer;
+    margin: 0 0.3rem;
+  }
+  button:disabled {
+    background: #f9c0d6;
+    cursor: not-allowed;
+  }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.min.js"></script>
+<script async src="https://docs.opencv.org/4.x/opencv.js" type="text/javascript"></script>
 </head>
 <body>
 
-  <h1>OpenCV.js 手のひら切り出しサンプル</h1>
-  <video id="video" autoplay playsinline></video>
-  <br />
+<h1>手相ミライ診断（全部入りテンプレ）</h1>
+
+<video id="video" autoplay playsinline muted></video>
+<canvas id="outputCanvas" width="320" height="240"></canvas>
+<canvas id="edgeCanvas" width="320" height="240"></canvas>
+
+<div style="margin-top:1rem;">
   <button id="startBtn" disabled>カメラ起動</button>
-  <button id="captureBtn" disabled>手のひら切り出し</button>
-  <br />
-  <canvas id="canvasOutput"></canvas>
+  <button id="captureBtn" disabled>診断用キャプチャ</button>
+</div>
 
-  <!-- OpenCV.js読み込み -->
-  <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
-  <script>
-    const video = document.getElementById('video');
-    const canvasOutput = document.getElementById('canvasOutput');
-    const ctx = canvasOutput.getContext('2d');
-    const startBtn = document.getElementById('startBtn');
-    const captureBtn = document.getElementById('captureBtn');
+<div id="diagnosisResult"></div>
 
-    let streaming = false;
+<script>
+  const video = document.getElementById("video");
+  const outputCanvas = document.getElementById("outputCanvas");
+  const edgeCanvas = document.getElementById("edgeCanvas");
+  const ctx = outputCanvas.getContext("2d");
+  const edgeCtx = edgeCanvas.getContext("2d");
 
-    // OpenCV.js読み込み完了フラグ
-    let cvReady = false;
+  const diagnosisResult = document.getElementById("diagnosisResult");
+  const startBtn = document.getElementById("startBtn");
+  const captureBtn = document.getElementById("captureBtn");
 
-    // OpenCV.jsの準備完了時に呼ばれる
-    cv['onRuntimeInitialized'] = () => {
-      console.log('OpenCV.js is ready');
-      cvReady = true;
-      startBtn.disabled = false;
-    };
+  let stream = null;
+  let hands = null;
+  let landmarks = null;
+  let opencvReady = false;
+  let detectingHands = false;
 
-    // カメラ起動
-    async function startCamera() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
-        video.srcObject = stream;
-        await video.play();
-        streaming = true;
+  // 診断コメントのテンプレート（ざっくり例）
+  const lineComments = {
+    life: ["生命線はっきり長い。健康でタフ。", "生命線やや短め。注意必要。"],
+    emotion: ["感情線しっかり。情熱的。", "感情線薄め。冷静派かも。"],
+    brain: ["頭脳線伸びて多才。", "頭脳線短めで集中力あり。"],
+    fate: ["運命線強くて転機多い。", "運命線薄く変化少なめ。"],
+    marriage: ["結婚線2本で揺れる時期。", "結婚線1本で安定期。"]
+  };
 
-        // canvasサイズをvideoに合わせる
-        canvasOutput.width = video.videoWidth;
-        canvasOutput.height = video.videoHeight;
-
-        captureBtn.disabled = false;
-      } catch (err) {
-        alert('カメラの起動に失敗しました: ' + err);
+  // OpenCV.js読み込み完了監視
+  function waitForOpenCvReady() {
+    return new Promise(resolve => {
+      if (typeof cv !== "undefined" && cv && cv.imread) {
+        resolve();
+      } else {
+        document.addEventListener('opencvready', () => {
+          resolve();
+        });
+        // 1秒毎にチェックも入れる
+        let checkInterval = setInterval(() => {
+          if (typeof cv !== "undefined" && cv && cv.imread) {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 1000);
       }
-    }
+    });
+  }
 
-    // 手のひら切り出し処理（簡易版）
-    function processFrame() {
-      if (!streaming) return;
+  // MediaPipe Hands初期化
+  function initHands() {
+    hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.7
+    });
+    hands.onResults(onHandsResults);
+  }
 
-      // videoの現在フレームをcanvasに描画
-      ctx.drawImage(video, 0, 0, canvasOutput.width, canvasOutput.height);
+  // カメラ起動
+  async function startCamera() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+      video.srcObject = stream;
+      await video.play();
 
-      // canvasからOpenCVのMatを作成
-      let src = cv.imread(canvasOutput);
-      let dst = new cv.Mat();
+      // canvasサイズをvideoに合わせる
+      outputCanvas.width = video.videoWidth || 320;
+      outputCanvas.height = video.videoHeight || 240;
+      edgeCanvas.width = outputCanvas.width;
+      edgeCanvas.height = outputCanvas.height;
 
-      // グレースケール変換
-      cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-
-      // ぼかしを入れてノイズ軽減
-      cv.GaussianBlur(dst, dst, new cv.Size(7,7), 0);
-
-      // 二値化（Cannyでエッジ抽出）
-      let edges = new cv.Mat();
-      cv.Canny(dst, edges, 50, 150);
-
-      // エッジ画像をカラーに変換してcanvasに表示
-      cv.cvtColor(edges, dst, cv.COLOR_GRAY2RGBA);
-      cv.imshow(canvasOutput, dst);
-
-      // メモリ解放
-      src.delete();
-      dst.delete();
-      edges.delete();
-    }
-
-    startBtn.addEventListener('click', () => {
-      if (!cvReady) {
-        alert('OpenCV.jsがまだ読み込まれていません。少し待ってからもう一度押してください。');
-        return;
-      }
-      startCamera();
+      captureBtn.disabled = false;
       startBtn.disabled = true;
-    });
+    } catch (err) {
+      alert("カメラ起動エラー: " + err.message);
+      startBtn.disabled = false;
+    }
+  }
 
-    captureBtn.addEventListener('click', () => {
-      processFrame();
-    });
+  // MediaPipeで手検出ループ
+  async function detectHandsLoop() {
+    if (!hands || !stream) return;
+    detectingHands = true;
+    async function frameDetect() {
+      if (!detectingHands) return;
+      await hands.send({ image: video });
+      requestAnimationFrame(frameDetect);
+    }
+    frameDetect();
+  }
 
-  </script>
+  // 手検出結果で描画とランドマーク保存
+  function onHandsResults(results) {
+    ctx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+    ctx.drawImage(results.image, 0, 0, outputCanvas.width, outputCanvas.height);
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+      landmarks = results.multiHandLandmarks[0];
+      drawConnectors(ctx, landmarks, HAND_CONNECTIONS, { color: "#00FF00", lineWidth: 3 });
+      drawLandmarks(ctx, landmarks, { color: "#FF0000", lineWidth: 2 });
+    } else {
+      landmarks = null;
+    }
+  }
+
+  // 線の位置判定（超ざっくり座標例）で擬似分類
+  function classifyLines(edgeMat) {
+    // TODO: ここに本格的な線抽出・分類ロジックを入れる
+    // 現状はランダムコメントを返す
+    const result = {
+      life: lineComments.life[Math.floor(Math.random() * lineComments.life.length)],
+      emotion: lineComments.emotion[Math.floor(Math.random() * lineComments.emotion.length)],
+      brain: lineComments.brain[Math.floor(Math.random() * lineComments.brain.length)],
+      fate: lineComments.fate[Math.floor(Math.random() * lineComments.fate.length)],
+      marriage: lineComments.marriage[Math.floor(Math.random() * lineComments.marriage.length)]
+    };
+    return result;
+  }
+
+  // キャプチャ＆エッジ抽出＆判定
+  function captureAndAnalyze() {
+    if (!opencvReady) {
+      alert("OpenCV.jsの読み込みがまだ完了していません。");
+      return;
+    }
+    if (!landmarks) {
+      alert("手が検出されていません。カメラ映像を調整してください。");
+      return;
+    }
+    // outputCanvasの画像をOpenCVに読み込み
+    let src = cv.imread(outputCanvas);
+    let gray = new cv.Mat();
+    let edges = new cv.Mat();
+
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+    cv.Canny(gray, edges, 50, 150);
+
+    cv.imshow(edgeCanvas, edges);
+
+    // 線分類（擬似）
+    const classification = classifyLines(edges);
+
+    // 診断結果表示
+    diagnosisResult.innerHTML = `
+      <h3>🖐 あなたの手相結果</h3>
+      <ul>
+        <li>・生命線：${classification.life}</li>
+        <li>・感情線：${classification.emotion}</li>
+        <li>・頭脳線：${classification.brain}</li>
+        <li>・運命線：${classification.fate}</li>
+        <li>・結婚線：${classification.marriage}</li>
+      </ul>
+    `;
+
+    // メモリ解放
+    src.delete();
+    gray.delete();
+    edges.delete();
+  }
+
+  // ページロード時の初期処理
+  (async () => {
+    await waitForOpenCvReady();
+    opencvReady = true;
+    startBtn.disabled = false;
+    initHands();
+  })();
+
+  startBtn.addEventListener("click", async () => {
+    startBtn.disabled = true;
+    await startCamera();
+    detectHandsLoop();
+  });
+
+  captureBtn.addEventListener("click", captureAndAnalyze);
+</script>
 
 </body>
 </html>
